@@ -1,0 +1,866 @@
+#!/bin/bash
+
+# Combined server manager script
+# supported NginX web server and PHP-FPM
+# (c) Vadonka 2013 v1.0.5
+
+##############################################################
+version="2013 v1.0.5"
+maintitle="Combined server manager script HUN version (c) Vadonka $version"
+
+# Creating default config file if not exsist
+if [ ! -f /usr/local/etc/servermanager.conf ]; then
+dialog --title "Első indítás" --clear --msgbox "Első indítás\nA konfigurációs állomány létrehozva\n\n/usr/local/etc/servermanager.conf\n\nA program most kilép" 10 41
+cat > /usr/local/etc/servermanager.conf <<EOF
+# MySQL root jelszó
+# Ha üresen hagyod a program minden esetben bekéri ezt a jelszót
+sqlrootpw=
+
+# PureFTPD adatbázis neve
+ftpd_database=pureftpd
+
+# PureFTPD user tábla
+ftpd_table=ftpd
+
+# Weblapok gyökér mappája
+webroot=/var/www
+EOF
+
+exit 1
+fi
+
+source /usr/local/etc/servermanager.conf
+
+pause()
+{
+   read -p "$*"
+}
+
+quit()
+{
+[ -f /tmp/menu.txt ] && rm -rf /tmp/menu.txt
+[ -f /tmp/sites.txt ] && rm -rf /tmp/sites.txt
+[ -f /tmp/menu2.txt ] && rm -rf /tmp/menu2.txt
+[ -f /tmp/input.txt ] && rm -rf /tmp/input.txt
+[ -f /tmp/domainlist.txt ] && rm -rf /tmp/domainlist.txt
+[ -f /tmp/domaincreate.sh ] && rm -rf /tmp/domaincreate.sh
+exit 0
+}
+
+if [ "$(id -u)" != "0" ]; then
+   echo "A program futtatásához root jogosultság szükséges" 1>&2
+   echo -e "\n" && pause 'Nyomj egy billentyűt a kilépéshez...'
+   exit 1
+fi
+
+# For the dialog box's
+INPUT=/tmp/menu.txt
+# create empty file
+>$INPUT
+
+# cleanup  - add a trap that will remove $INPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $INPUT; exit" SIGHUP SIGINT SIGTERM
+
+dialog --clear --backtitle "$maintitle" \
+--title "[ F Ő  M E N Ü ]" \
+--menu "\nVálaszd ki a kivánt menüpontot" 15 60 5 \
+DomainList "A meglévő domainek listázása" \
+AddNewDomain "Új domain hozzáadása" \
+EnableWeb "Weblap engedélyezése" \
+DisableWeb "Weblap tiltása" \
+Kilepes "Kilepés a programból" 2>"${INPUT}"
+
+menuitem=$(<"${INPUT}")
+
+sqlrootpwcheck()
+{
+# check the mysql root password
+if [ -z $sqlrootpw ]; then
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+# show an inputbox
+dialog --title "SQL root jelszó" \
+--backtitle "$maintitle" \
+--insecure \
+--passwordbox "Add meg az SQL szerver root jelszavát" 8 60 2>$OUTPUT
+
+# get respose
+respose=$?
+ 
+# get data stored in $OUPUT using input redirection
+sqlrootpw=$(<$OUTPUT)
+
+# make a decsion 
+case $respose in
+  0) 
+        mysql -u root --password=$sqlrootpw -e "exit" > /dev/null 2>&1
+        if [ "$?" -ne 0 ]; then
+                dialog --title "SQL root jelszó" --clear --msgbox "A MySQL root jelszó hibás!" 5 41
+                quit;
+        else
+                dialog --title "SQL root jelszó" --clear --msgbox "MySQL kapcsolat teszt OK" 5 41
+        fi
+    ;;
+  1) 
+        echo "Cancel pressed." 
+        ;;
+  255) 
+   echo "[ESC] key pressed."
+esac
+ 
+# remove $OUTPUT file
+rm $OUTPUT
+else
+    mysql -u root --password=$sqlrootpw -e "exit" > /dev/null 2>&1
+    if [ "$?" -ne 0 ]; then
+            dialog --title "SQL root jelszó" --clear --msgbox "A MySQL root jelszó hibás!" 5 41
+            quit;
+    else
+            dialog --title "SQL root jelszó" --clear --msgbox "MySQL kapcsolat teszt OK" 5 41
+    fi
+fi
+}
+
+domainproc()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+# show an inputbox
+dialog --title "Domain név" \
+--backtitle "$maintitle" \
+--inputbox "Add meg a kívánt domain nevet " 8 60 2>$OUTPUT
+
+# get respose
+respose=$?
+
+# get data stored in $OUPUT using input redirection
+domain=$(<$OUTPUT)
+
+# make a decsion 
+case $respose in
+  0)
+	LEN=$(echo ${#domain})
+	if [ $LEN -eq 0 ]; then
+		dialog --title "Domain név" --clear --msgbox "Nem adtál meg domain nevet!" 10 41
+		quit;
+	elif [ $LEN -gt 32 ]; then
+		dialog --title "Domain név" --clear --msgbox "Domain név túl hosszú!\n(max. 32 karakter)" 10 41
+		quit;
+	else
+		dialog --title "Domain név" --clear --msgbox "Domain név sikeresen beolvasva\n\nDomain név: $domain" 10 41
+	fi
+    ;;
+  1)
+	echo "Cancel pressed."
+	quit;
+	;;
+  255)
+   echo "[ESC] key pressed."
+   quit;
+esac
+ 
+# remove $OUTPUT file
+rm $OUTPUT
+}
+
+ftpproc()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+# show an inputbox
+dialog --title "FTP user" \
+--backtitle "$maintitle" \
+--inputbox "Add meg az FTP felh. nevet " 8 60 2>$OUTPUT
+
+# get respose
+respose=$?
+ 
+# get data stored in $OUPUT using input redirection
+ftpuser=$(<$OUTPUT)
+
+# make a decsion 
+case $respose in
+  0) 
+	LEN=$(echo ${#ftpuser})
+	if [ $LEN -eq 0 ]; then
+		dialog --title "FTP user" --clear --msgbox "Nem adtál meg FTP felhasználót!" 10 41
+		quit;
+	elif [ $LEN -gt 16 ]; then
+		dialog --title "FTP user" --clear --msgbox "FTP felh. név túl hosszú!\n(max. 16 karakter)" 10 41
+		quit;
+	else
+		dialog --title "FTP user" --clear --msgbox "FTP felh. név sikeresen beolvasva\n\nFTP felh.név: $ftpuser" 10 41
+		ftppw=`pwgen -sB | awk '{print $1}'`
+		dialog --title "FTP user" --clear --msgbox "Generált FTP jelszó: $ftppw\n\n(Összegzésben szerepel!)" 10 41
+	fi
+    ;;
+  1)
+	echo "Cancel pressed."
+	quit;
+	;;
+  255)
+    echo "[ESC] key pressed."
+    quit;
+esac
+
+# remove $OUTPUT file
+rm $OUTPUT
+}
+
+mysqlproc()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+dialog --title "MySQL adatbázis" \
+--backtitle "$maintitle" \
+--yesno "MySQL adatbázis létrehozása?" 7 60
+
+# Get exit status
+# 0 means user hit [yes] button.
+# 1 means user hit [no] button.
+# 255 means user hit [Esc] key.
+response=$?
+case $response in
+   0) mysqlyes=1;;
+   1) mysqlyes=0;;
+   255) echo "[ESC] key pressed.";;
+esac
+
+if [ "$mysqlyes" == "1" ]; then
+	# show an inputbox
+	dialog --title "MySQL adatbázis" \
+	--backtitle "$maintitle" \
+	--inputbox "Add meg a MySQL adatbázis nevet " 8 60 2>$OUTPUT
+
+	# get respose
+	respose=$?
+ 
+	# get data stored in $OUPUT using input redirection
+	mysqldb=$(<$OUTPUT)
+
+	# make a decsion 
+	case $respose in
+	0) 
+		LEN=$(echo ${#mysqldb})
+		if [ $LEN -eq 0 ]; then
+			dialog --title "MySQL adatbázis" --clear --msgbox "Nem adtál meg MySQL adatbázist!" 10 41
+			quit;
+		elif [ $LEN -gt 32 ]; then
+			dialog --title "MySQL adatbázis" --clear --msgbox "MySQL adatbázis név túl hosszú!\n(max. 32 karakter)" 10 41
+			quit;
+		else
+			dialog --title "MySQL adatbázis" --clear --msgbox "MySQL adatbázis sikeresen beolvasva\n\nMySQL adatbázis neve: $mysqldb" 10 41
+		fi
+		;;
+	1) 
+		echo "Cancel pressed."
+		quit;
+		;;
+	255) 
+		echo "[ESC] key pressed."
+		quit;
+	esac
+ 
+	# remove $OUTPUT file
+	rm $OUTPUT
+
+	# show an inputbox
+	dialog --title "MySQL adatbázis" \
+	--backtitle "$maintitle" \
+	--inputbox "Add meg a MySQL felh. nevet " 8 60 2>$OUTPUT
+
+	# get respose
+	respose=$?
+ 
+	# get data stored in $OUPUT using input redirection
+	mysqluser=$(<$OUTPUT)
+
+	# make a decsion 
+	case $respose in
+	0) 
+		LEN=$(echo ${#mysqluser})
+		if [ $LEN -eq 0 ]; then
+			dialog --title "MySQL felh. név" --clear --msgbox "Nem adtál meg MySQL felh. nevet!" 10 41
+			quit;
+		elif [ $LEN -gt 16 ]; then
+			dialog --title "MySQL felh. név" --clear --msgbox "MySQL felh. név túl hosszú!\n(max. 16 karakter)" 10 41
+			quit;
+		else
+			dialog --title "MySQL felh. név" --clear --msgbox "MySQL felh. név sikeresen beolvasva\n\nMySQL felh. név: $mysqluser" 10 41
+			mysqlpw=`pwgen -sB | awk '{print $1}'`
+			dialog --title "MySQL felh. nev" --clear --msgbox "Generált MySQL jelszó: $mysqlpw\n\n(Összegzésben szerepel!)" 10 41
+			mysqlsum="MySQL hozzáférés engedélyezve a(z) '$mysqldb' nevű adatbázishoz a(z) '$mysqluser' felh. név a(z) '$mysqlpw' jelszó párosítással"
+			mysqladmin="http://pmadmin.reformatus.hu"
+			fi
+		;;
+	1) 
+		echo "Cancel pressed."
+		quit;
+		;;
+	255) 
+		echo "[ESC] key pressed."
+		quit;
+	esac
+ 
+	# remove $OUTPUT file
+	rm $OUTPUT
+else
+	dialog --title "MySQL adatbázis" --clear --msgbox "Nincs MySQL hozzáférés" 10 41
+	mysqlsum="Nincs MySQL hozzáférés"
+	mysqladmin="Nem engedélyezett"
+fi
+}
+
+phpfpmproc()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+dialog --title "PHP-FPM process" \
+--backtitle "$maintitle" \
+--yesno "PHP-FPM process létrehozása?" 7 60
+
+# Get exit status
+# 0 means user hit [yes] button.
+# 1 means user hit [no] button.
+# 255 means user hit [Esc] key.
+response=$?
+case $response in
+   0) phpfpmyes=1;;
+   1) phpfpmyes=0;;
+   255) echo "[ESC] key pressed.";;
+esac
+
+if [ "$phpfpmyes" == "1" ]; then
+	pools=`ls -d /etc/php5/fpm/pool.d/* | tr " " "\n"`
+	let maxpn=0
+	for pool in $pools; do
+		poolnum=`cat $pool | grep "listen = 127.0.0.1:" | awk 'BEGIN {FS=":"} {print $2}' | sed "s/[^0-9]//g"`
+		if [ "$maxpn" == "0" ]; then
+			let maxpn=$poolnum
+		elif [[ "$poolnum" > "$maxpn" ]]; then
+			let maxpn=$poolnum
+		fi
+	done
+	let newpn=$(($maxpn+1))
+	dialog --title "PHP-FPM process" --clear --msgbox "PHP-FPM process portszám: $newpn\n\n(Összegzésben szerepel!)" 10 41
+	phpfpmsum="PHP-FPM process engedélyezve a(z) '$newpn' portszámon"
+else
+	dialog --title "PHP-FPM process" --clear --msgbox "PHP-FPM process tiltva\nCsak statikus html oldal futtatható" 10 41
+	phpfpmsum="Csak statikus html tartalom futtatható"
+fi
+
+# remove $OUTPUT file
+rm $OUTPUT
+}
+
+summary()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+dialog --title "Összegzés" \
+--backtitle "$maintitle" \
+--yesno "Domain név: $domain\n\nFTP: A(z) '$ftpuser' felh. név a(z) '$ftppw' jelszóval lesz létrehozva\n\nMySQL: $mysqlsum\n\nPHP: $phpfpmsum\n\n\nRendben vannak az adatok?" 20 70
+
+# Get exit status
+# 0 means user hit [yes] button.
+# 1 means user hit [no] button.
+# 255 means user hit [Esc] key.
+response=$?
+case $response in
+   0) summaryok=1;;
+   1) summaryok=0;;
+   255) echo "[ESC] key pressed.";;
+esac
+}
+
+process()
+{
+uids=`cat /etc/passwd | awk -F":" '{print $3}' | sed "s/[^0-9]//g"`
+let maxuid=1000
+for uid in $uids; do
+	LEN=$(echo ${#uid})
+	if [ $LEN -eq 4 ]; then
+		if [[ "$uid" > "$maxuid" ]]; then
+			let maxuid=$uid
+		fi
+	fi
+done
+let newuid=$(($maxuid+1))
+
+gids=`cat /etc/passwd | awk -F":" '{print $4}' | sed "s/[^0-9]//g"`
+let maxgid=1000
+for gid in $gids; do
+	LEN=$(echo ${#gid})
+	if [ $LEN -eq 4 ]; then
+		if [[ "$gid" > "$maxgid" ]]; then
+			let maxgid=$gid
+		fi
+	fi
+done
+let newgid=$(($maxgid+1))
+
+cat > /tmp/domaincreate.sh <<EOF
+#!/bin/bash
+
+echo "Web mappa létrehozása."
+mkdir $webroot/$domain
+echo "Felhasználó létrehozása."
+groupadd -g $newgid $domain
+useradd -d $webroot/$domain -u $newuid -g $newgid -M -s /bin/false $domain
+echo "Jogosultságok beállítása"
+chown -R $domain:$domain $webroot/$domain
+echo "MySQL adatbázis létrehozása."
+mysql -u root -p$sqlrootpw -e "create database $mysqldb"
+mysql -u root -p$sqlrootpw -e "CREATE USER '$mysqluser'@'localhost' IDENTIFIED BY '$mysqlpw'"
+mysql -u root -p$sqlrootpw -e "GRANT ALL PRIVILEGES ON $mysqldb . * TO '$mysqluser'@'localhost'"
+mysql -u root -p$sqlrootpw $ftpd_database -e "INSERT INTO $ftpd_table (User, Status, Password, Uid, Gid, Dir) values ('$ftpuser', '1', MD5('$ftppw'), '$newuid', '$newgid', '$webroot/$domain')"
+
+EOF
+
+if [ "$phpfpmyes" == "1" ]; then
+cat >> /tmp/domaincreate.sh <<EOF
+echo "PHP-FPM process létrehozása: 127.0.0.1:$newpn"
+cat > /etc/php5/fpm/pool.d/$domain <<EOF
+[global]
+pid = /var/run/php5-fpm/$domain.pid
+error_log = /var/log/php5-fpm/$domain.log
+emergency_restart_interval = 12h
+process_control_timeout = 12h
+
+[$domain]
+listen = 127.0.0.1:$newpn
+listen.owner = $domain
+listen.group = $domain
+user = $domain
+group = $domain
+pm = dynamic
+pm.max_children = 50
+pm.start_servers = 1
+pm.min_spare_servers = 1
+pm.max_spare_servers = 35
+chdir = /
+`echo EOF`
+
+EOF
+fi
+
+cat >> /tmp/domaincreate.sh <<EOF
+echo "Nginx konfig létrehozása"
+cat > /etc/nginx/sites-available/$domain <<EOF
+server
+{
+    server_name .$domain;
+    access_log /var/log/nginx/$domain.access.log;
+    error_log /var/log/nginx/$domain.error.log;
+    root $webroot/$domain;
+    index index.php index.html index.htm;
+
+    location /php_ini
+    {
+        return 403;
+    }
+
+    # use fastcgi for all php files
+    location ~ \.php$
+    {
+        fastcgi_pass 127.0.0.1:$newpn;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    # deny access to apache .htaccess files
+    location ~ /\.ht
+    {
+        deny all;
+    }
+}
+`echo EOF`
+
+ln -s /etc/nginx/sites-available/$domain /etc/nginx/sites-enabled/$domain
+
+echo "PHP-FPM ujraindítása..."
+/etc/php5/fpm/starter/php5-fpm-starter stop $domain
+/etc/php5/fpm/starter/php5-fpm-starter start $domain
+echo "Nginx konfigok újraolvasása..."
+service nginx reload
+EOF
+
+sed -i 's/$document_root$fastcgi_script_name/\\\$document_root\\\$fastcgi_script_name/' /tmp/domaincreate.sh
+
+}
+
+reportemail()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+# show an inputbox
+dialog --title "Admin email" \
+--backtitle "$maintitle" \
+--inputbox "Értesítési email cím (nem kötelező)" 8 60 2>$OUTPUT
+
+# get respose
+respose=$?
+
+# get data stored in $OUPUT using input redirection
+email=$(<$OUTPUT)
+
+# make a decsion 
+case $respose in
+    0)
+	LEN=$(echo ${#email})
+	if [ $LEN -eq 0 ]; then
+	    dialog --title "Értesítési email cím" --clear --msgbox "Nem adtál meg értesítési címet\nAz összegzés a konzolra lesz kiírva!" 10 50
+	    emailsend="no"
+	elif [[ $email =~ "@" ]]; then
+	    dialog --title "Értesítési email cím" --clear --msgbox "Étesítési email cím: $email" 6 70
+	    emailsend="yes"
+	else
+	    dialog --title "Értesítési email cím" --clear --msgbox "Az email cím formátuma hibás!\nAz összegzés a konzolra lesz kiírva" 10 50
+	    emailsend="no"
+	fi
+	;;
+    1)
+	echo "Cancel pressed."
+	quit;
+	;;
+    255)
+	echo "[ESC] key pressed."
+	quit;
+esac
+
+# remove $OUTPUT file
+rm $OUTPUT
+}
+
+domrepemail()
+{
+# For the dialog box's
+OUTPUT="/tmp/input.txt"
+# create empty file
+>$OUTPUT
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $OUTPUT; exit" SIGHUP SIGINT SIGTERM
+
+# show an inputbox
+dialog --title "Admin email" \
+--backtitle "$maintitle" \
+--inputbox "Értesítési email cím" 8 60 2>$OUTPUT
+
+# get respose
+respose=$?
+
+# get data stored in $OUPUT using input redirection
+email=$(<$OUTPUT)
+
+# make a decsion 
+case $respose in
+    0)
+	LEN=$(echo ${#email})
+	if [ $LEN -eq 0 ]; then
+	    dialog --title "Értesítési email cím" --clear --msgbox "Nem adtál meg értesítési címet!\nNem tudom elküldeni a domainek listáját" 10 50
+	    quit;
+	elif [[ $email =~ "@" ]]; then
+	    dialog --title "Értesítési email cím" --clear --msgbox "Étesítési email cím: $email" 6 70
+	else
+	    dialog --title "Értesítési email cím" --clear --msgbox "Az email cím formátuma hibás!\nNem tudom elküldeni a domainek listáját" 10 50
+	    quit;
+	fi
+	;;
+    1)
+	echo "Cancel pressed."
+	quit;
+	;;
+    255)
+	echo "[ESC] key pressed."
+	quit;
+esac
+
+# remove $OUTPUT file
+rm $OUTPUT
+}
+
+domainlist()
+{
+domprocess()
+{
+[ -f /tmp/domainlist.txt ] && rm -rf /tmp/domainlist.txt
+touch /tmp/domainlist.txt
+
+for dom in `find $webroot -maxdepth 1 -mindepth 1 -type d | xargs -l basename | sort`; do
+    echo $dom >> /tmp/domainlist.txt;
+done
+darabszam=`find $webroot -maxdepth 1 -mindepth 1 -type d | xargs -l basename | wc -l`
+}
+
+# For the dialog box's
+INPUT2="/tmp/menu2.txt"
+# create empty file
+>$INPUT2
+
+# cleanup  - add a trap that will remove $OUTPUT
+# if any of the signals - SIGHUP SIGINT SIGTERM it received.
+trap "rm $INPUT2; exit" SIGHUP SIGINT SIGTERM
+
+dialog --clear  --backtitle "$maintitle" \
+--title "[ D O M A I N  L I S T Á Z Ó  M E N Ü ]" \
+--menu "\nVálaszd ki a kivánt menüpontot" 15 65 4 \
+ListToDisplay "Listázás képernyőre" \
+ListToEmail "Lista küldése emailen" \
+ListToBookm "Bookmark file generálása és küldése emailen" \
+Kilepes "Kilépés a programból" 2>"${INPUT2}"
+
+menuitem2=$(<"${INPUT2}")
+
+listtodisplay()
+{
+dialog --title "Domainek listája: $darabszam db" --textbox /tmp/domainlist.txt 30 50
+}
+
+listtoemail()
+{
+subject="Domainek listája: $darabszam db"
+message=`cat /tmp/domainlist.txt`
+encoded=$(base64 <<< "$message")
+
+sendmail -t <<< "\
+From: postmaster@reformatus.hu
+To: $email
+Subject: $subject
+Content-Transfer-Encoding: base64
+Content-Type: text/plain; charset="utf-8"
+
+$encoded
+"
+dialog --title "Domainek listája" --msgbox "Email kiküldve a(z) $email email címre" 6 70
+}
+
+listtobookm()
+{
+attachment=/tmp/bookmark.html
+[ -f $attachment ] && rm $attachment
+
+cat > $attachment <<EOF
+<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<!-- This is an automatically generated file.
+     It will be read and overwritten.
+     DO NOT EDIT! -->
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+    <DT><H3>Református Honlapok</H3>
+    <DL><p>
+EOF
+
+for a in `find $webroot -maxdepth 1 -mindepth 1 -type d | xargs -l basename | sort`; do
+    url=`echo 'http://'$a`;
+    if [ ! -z $url ]; then
+    echo -e '\t<DT><A HREF="'$url'">'$url'</A>' >> $attachment;
+    fi
+done
+
+cat >> $attachment <<EOF
+    </DL><p>
+</DL><p>
+EOF
+
+subject="Domainek listája: $darabszam db"
+body="Szabványos bookmark html fájl a mellékletben csatolva"
+attach=`cat $attachment`
+encoded_body=$(base64 <<< "$body")
+encoded_attach=$(base64 <<< "$attach")
+sendmail -t <<< "\
+From: postmaster@reformatus.hu
+To: $email
+Subject: $subject
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=q1w2e3r4t5
+
+--q1w2e3r4t5
+Content-Transfer-Encoding: base64
+Content-Type: text/plain; charset="utf-8"
+
+$encoded_body
+
+--q1w2e3r4t5
+Content-Transfer-Encoding: base64
+Content-Type: application/octet-stream; name="$(basename $attachment)"
+Content-Disposition: attachment; filename="$(basename $attachment)"
+
+$encoded_attach
+
+--q1w2e3r4t5--
+"
+
+dialog --title "Domainek listája" --msgbox "Email kiküldve a(z) $email email címre" 6 70
+
+rm -rf $attachment
+}
+
+# make decsion
+case $menuitem2 in
+    ListToDisplay) domprocess;listtodisplay;;
+    ListToEmail) domprocess;domrepemail;listtoemail;;
+    ListToBookm) domprocess;domrepemail;listtobookm;;
+    Kilepes) echo "Bye";quit;;
+esac
+
+[ -f $INPUT ] && rm $INPUT
+[ -f $INPUT2 ] && rm $INPUT2
+}
+
+enableweb()
+{
+nginxsites=(`diff -r --brief /etc/nginx/sites-available /etc/nginx/sites-enabled | grep sites-available | awk -F ' ' '{print $4}' | tr "\n" " "`)
+let ngsitesnum="${#nginxsites[*]}-1"
+
+for num in `seq 0 $ngsitesnum`; do
+    ngopt+=($num "${nginxsites[$num]}" "off")
+done
+
+dialog --backtitle "Nginx site(s) enable" --checklist "Válaszd ki az engedélyezendő site(okat)" 20 50 ${#nginxsites[*]} "${ngopt[@]}" 2> /tmp/sites.txt
+nginxmodselect=(`cat /tmp/sites.txt | tr " " "\n" | sed "s/\"//g"`)
+let nginxmodnum="${#nginxmodselect[*]}-1"
+
+for num2 in `seq 0 $nginxmodnum`; do
+    ngstmod=${nginxmodselect[$num2]}
+    ln -s /etc/nginx/sites-available/${nginxsites[$ngstmod]} /etc/nginx/sites-enabled && service nginx reload
+done
+}
+
+disableweb()
+{
+nginxsites=(`ls /etc/nginx/sites-enabled | tr "\n" " "`)
+let ngsitesnum="${#nginxsites[*]}-1"
+
+for num in `seq 0 $ngsitesnum`; do
+    ngopt+=($num "${nginxsites[$num]}" "off")
+done
+
+dialog --backtitle "Nginx site(s) disable" --checklist "Válaszd ki a letiltandó site(okat)" 30 50 ${#nginxsites[*]} "${ngopt[@]}" 2> /tmp/sites.txt
+nginxmodselect=(`cat /tmp/sites.txt | tr " " "\n" | sed "s/\"//g"`)
+let nginxmodnum="${#nginxmodselect[*]}-1"
+
+for num2 in `seq 0 $nginxmodnum`; do
+    ngstmod=${nginxmodselect[$num2]}
+    rm -rf /etc/nginx/sites-enabled/${nginxsites[$ngstmod]} && service nginx reload
+done
+}
+
+# make decsion
+case $menuitem in
+    DomainList) summaryok=0;domainlist;;
+    AddNewDomain) sqlrootpwcheck;domainproc;ftpproc;mysqlproc;phpfpmproc;summary;;
+    EnableWeb) enableweb;;
+    DisableWeb) disableweb;;
+    Kilepes) echo "Bye";quit;;
+esac
+
+[ -f $INPUT ] && rm $INPUT
+
+if [ "$summaryok" == "1" ]; then
+process;
+chmod +x /tmp/domaincreate.sh
+
+# /tmp/domaincreate.sh   # <- Majd ki kell kommentezni ha vegleges lesz!
+
+cat > /tmp/summaryreport.txt <<EOF
+Domain név: $domain
+Publikus IP cím: `wget -q -O - checkip.dyndns.org|sed -e 's/.*Current IP Address: //' -e 's/<.*$//'`
+MySQL: $mysqlsum
+MySQL Admin: $mysqladmin
+FTP felh. név: $ftpuser
+FTP jelszó: $ftppw
+PHP-FPM process port: $phpfpmsum
+
+Ez egy automatikusan generált email. Kérem ne válaszoljon rá!
+Administrator
+
+EOF
+
+reportemail;
+
+if [ "$emailsend" = "yes" ]; then
+subject="$domain hozzáférési adatok"
+message=`cat /tmp/summaryreport.txt`
+encoded=$(base64 <<< "$message")
+
+sendmail -t <<< "\
+From: postmaster@reformatus.hu
+To: $email
+Subject: $subject
+Content-Transfer-Encoding: base64
+Content-Type: text/plain; charset="utf-8"
+
+$encoded
+"
+clear
+echo "A hozzáférési adatok kiküldve a $email email címre"
+echo -e "\n" && pause 'Nyomj egy billentyűt a kilépéshez...'
+quit;
+
+else
+    clear
+    cat /tmp/summaryreport.txt
+    echo -e "\n" && pause 'Nyomj egy billentyűt a kilépéshez...'
+    quit;
+fi
+
+else
+    quit;
+fi
+
+quit;

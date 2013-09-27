@@ -1,2 +1,2 @@
-Adcanced server manager script
+Advanced server manager script
 Written in bash

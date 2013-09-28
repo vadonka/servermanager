@@ -815,7 +815,7 @@ if [ "$summaryok" == "1" ]; then
 process;
 chmod +x /tmp/domaincreate.sh
 
-# /tmp/domaincreate.sh   # <- Majd ki kell kommentezni ha vegleges lesz!
+/tmp/domaincreate.sh   # <- Majd ki kell kommentezni ha vegleges lesz!
 
 cat > /tmp/summaryreport.txt <<EOF
 Domain név: $domain

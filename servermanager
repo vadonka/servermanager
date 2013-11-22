@@ -2,10 +2,10 @@
 
 # Combined server manager script
 # supported NginX web server and PHP-FPM
-# (c) Vadonka 2013 v1.0.5
+# (c) Vadonka 2013 v1.0.6
 
 ##############################################################
-version="2013 v1.0.5"
+version="2013 v1.0.6"
 maintitle="Combined server manager script HUN version (c) Vadonka $version"
 
 # Creating default config file if not exsist
@@ -15,6 +15,9 @@ cat > /usr/local/etc/servermanager.conf <<EOF
 # MySQL root jelszó
 # Ha üresen hagyod a program minden esetben bekéri ezt a jelszót
 sqlrootpw=
+
+# PHPmyadmin URL
+phpmyurl=http:///
 
 # PureFTPD adatbázis neve
 ftpd_database=pureftpd
@@ -319,7 +322,7 @@ if [ "$mysqlyes" == "1" ]; then
 			mysqlpw=`pwgen -sB | awk '{print $1}'`
 			dialog --title "MySQL felh. nev" --clear --msgbox "Generált MySQL jelszó: $mysqlpw\n\n(Összegzésben szerepel!)" 10 41
 			mysqlsum="MySQL hozzáférés engedélyezve a(z) '$mysqldb' nevű adatbázishoz a(z) '$mysqluser' felh. név a(z) '$mysqlpw' jelszó párosítással"
-			mysqladmin="http://pmadmin.reformatus.hu"
+			mysqladmin=$phpmyurl
 			fi
 		;;
 	1) 

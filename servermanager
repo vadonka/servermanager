@@ -2,10 +2,10 @@
 
 # Combined server manager script
 # supported NginX web server and PHP-FPM
-# (c) Vadonka 2013 v1.0.6
+# (c) Vadonka 2014 v1.0.7
 
 ##############################################################
-version="2013 v1.0.6"
+version="2014 v1.0.7"
 maintitle="Combined server manager script HUN version (c) Vadonka $version"
 
 # Creating default config file if not exsist
@@ -67,11 +67,12 @@ trap "rm $INPUT; exit" SIGHUP SIGINT SIGTERM
 
 dialog --clear --backtitle "$maintitle" \
 --title "[ F Ő  M E N Ü ]" \
---menu "\nVálaszd ki a kivánt menüpontot" 15 60 5 \
+--menu "\nVálaszd ki a kivánt menüpontot" 15 60 6 \
 DomainList "A meglévő domainek listázása" \
 AddNewDomain "Új domain hozzáadása" \
 EnableWeb "Weblap engedélyezése" \
 DisableWeb "Weblap tiltása" \
+ChangeFTPpass "Új FTP jelszó generálása" \
 Kilepes "Kilepés a programból" 2>"${INPUT}"
 
 menuitem=$(<"${INPUT}")
@@ -266,11 +267,11 @@ if [ "$mysqlyes" == "1" ]; then
 
 	# get respose
 	respose=$?
- 
+
 	# get data stored in $OUPUT using input redirection
 	mysqldb=$(<$OUTPUT)
 
-	# make a decsion 
+	# make a decsion
 	case $respose in
 	0) 
 		LEN=$(echo ${#mysqldb})
@@ -674,7 +675,7 @@ dialog --title "Domainek listája: $darabszam db" --textbox /tmp/domainlist.txt 
 
 listtoemail()
 {
-subject="Domainek listája: $darabszam db"
+subject="Domainek listaja: $darabszam db"
 message=`cat /tmp/domainlist.txt`
 encoded=$(base64 <<< "$message")
 
@@ -720,7 +721,7 @@ cat >> $attachment <<EOF
 </DL><p>
 EOF
 
-subject="Domainek listája: $darabszam db"
+subject="Domainek listaja: $darabszam db"
 body="Szabványos bookmark html fájl a mellékletben csatolva"
 attach=`cat $attachment`
 encoded_body=$(base64 <<< "$body")
@@ -803,12 +804,56 @@ for num2 in `seq 0 $nginxmodnum`; do
 done
 }
 
+changeftppass()
+{
+
+nginxsites=(`ls /etc/nginx/sites-enabled | tr "\n" " "`)
+let ngsitesnum="${#nginxsites[*]}-1"
+
+for num in `seq 0 $ngsitesnum`; do
+    ngopt+=($num "${nginxsites[$num]}" "off")
+done
+
+dialog --backtitle "Generate new FTP password" --checklist "Válaszd ki a site(okat) ahova új jelszó kell" 30 50 ${#nginxsites[*]} "${ngopt[@]}" 2> /tmp/sites.txt
+nginxmodselect=(`cat /tmp/sites.txt | tr " " "\n" | sed "s/\"//g"`)
+let nginxmodnum="${#nginxmodselect[*]}-1"
+
+for num2 in `seq 0 $nginxmodnum`; do
+    newpw=$(pwgen -cnsB1)
+    ngstmod=${nginxmodselect[$num2]}
+    webuser=${nginxsites[$ngstmod]}
+    dialog --title "Új FTP jelszó" --clear --msgbox "Új FTP jelszó a(z) $webuser oldalhoz: $newpw" 10 41
+    mysql -u root -p$sqlrootpw $ftpd_database -e "UPDATE $ftpd_table set Password=MD5('$newpw') where Dir Like '%$webuser%'"
+    reportemail;
+
+    subject="$webuser uj FTP jelszo"
+    message="$webuser új generált FTP jelszó: $newpw"
+    encoded=$(base64 <<< "$message")
+
+sendmail -t <<< "\
+From: postmaster@reformatus.hu
+To: $email
+Subject: $subject
+Content-Transfer-Encoding: base64
+Content-Type: text/plain; charset="utf-8"
+
+$encoded
+"
+clear
+echo "Az új jelszó kiküldve a $email email címre"
+echo -e "\n" && pause 'Nyomj egy billentyűt a kilépéshez...'
+
+done
+}
+
+
 # make decsion
 case $menuitem in
     DomainList) summaryok=0;domainlist;;
     AddNewDomain) sqlrootpwcheck;domainproc;ftpproc;mysqlproc;phpfpmproc;summary;;
     EnableWeb) enableweb;;
     DisableWeb) disableweb;;
+    ChangeFTPpass) changeftppass;;
     Kilepes) echo "Bye";quit;;
 esac
 
@@ -837,7 +882,7 @@ EOF
 reportemail;
 
 if [ "$emailsend" = "yes" ]; then
-subject="$domain hozzáférési adatok"
+subject="$domain hozzaferesi adatok"
 message=`cat /tmp/summaryreport.txt`
 encoded=$(base64 <<< "$message")
 
